@@ -338,58 +338,58 @@ def auto_rooster(data, time_limit_s=60):
 
     # ---------- Persoonlijke wensen ----------
 
-    # 10.1) Hennie (2097) only nights
-    emp_vdBrink = '2097'
-    if emp_vdBrink in emp_ids:
+    # 10.1) (2097) only nights
+    emp_2097 = '2097'
+    if emp_2097 in emp_ids:
         for s in shifts['shift_id']:
             if s not in night_shifts:
-                model.Add(x[(s, emp_vdBrink)] == 0)
+                model.Add(x[(s, emp_2097)] == 0)
 
-    # 10.2) Romy (2653) only weekends -> use day_of_week from shift row
-    emp_vDijkhuizen = '2653'
-    if emp_vDijkhuizen in emp_ids:
+    # 10.2) (2653) only weekends -> use day_of_week from shift row
+    emp_2653 = '2653'
+    if emp_2653 in emp_ids:
         for _, r in shifts.iterrows():
             s = int(r['shift_id'])
             dow = int(r['day_of_week'])
             if dow not in [5, 6]:
-                model.Add(x[(s, emp_vDijkhuizen)] == 0)
+                model.Add(x[(s, emp_2653)] == 0)
 
-    # 10.3) Jasmijn (3888): Friday evening (shift_name has 'A') or weekends
-    emp_vdBerg = '3888'
-    if emp_vdBerg in emp_ids:
+    # 10.3) (3888): Friday evening (shift_name has 'A') or weekends
+    emp_3888 = '3888'
+    if emp_3888 in emp_ids:
         for _, r in shifts.iterrows():
             s = int(r['shift_id'])
             dow = int(r['day_of_week'])
             shift_name = r['shift_name']
             if not ((dow == 4 and 'A' in shift_name) or dow in [5, 6]):
-                model.Add(x[(s, emp_vdBerg)] == 0)
+                model.Add(x[(s, emp_3888)] == 0)
 
-    # 10.4) Maike (601011): No Mon/Tue/Wed
-    emp_vKasbergen = '601011'
-    if emp_vKasbergen in emp_ids:
+    # 10.4) (601011): No Mon/Tue/Wed
+    emp_601011 = '601011'
+    if emp_601011 in emp_ids:
         for _, r in shifts.iterrows():
             s = int(r['shift_id'])
             dow = int(r['day_of_week'])
             if dow in [0, 1, 2]:
-                model.Add(x[(s, emp_vKasbergen)] == 0)
+                model.Add(x[(s, emp_601011)] == 0)
 
-    # 10.5) Marlies (603722): max 2 days in row and 2 days off after block, with prev_assignments considered
-    emp_Schreurs = '603722'
-    if emp_Schreurs in emp_ids:
+    # 10.5) (603722): max 2 days in row and 2 days off after block, with prev_assignments considered
+    emp_603722 = '603722'
+    if emp_603722 in emp_ids:
         # day-level bools keyed by calendar date
         work_day = {}
         for d in dates_list:
-            w = model.NewBoolVar(f"work_{emp_Schreurs}_{d.isoformat()}")
+            w = model.NewBoolVar(f"work_{emp_603722}_{d.isoformat()}")
             work_day[d] = w
             shifts_today = shifts_by_date.get(d, [])
             if shifts_today:
-                model.Add(sum(x[(s, emp_Schreurs)] for s in shifts_today) >= 1).OnlyEnforceIf(w)
-                model.Add(sum(x[(s, emp_Schreurs)] for s in shifts_today) == 0).OnlyEnforceIf(w.Not())
+                model.Add(sum(x[(s, emp_603722)] for s in shifts_today) >= 1).OnlyEnforceIf(w)
+                model.Add(sum(x[(s, emp_603722)] for s in shifts_today) == 0).OnlyEnforceIf(w.Not())
             else:
                 model.Add(w == 0)
 
         # incorporate previous tail block length (dates)
-        prev_block = get_last_consecutive_block_dates(prev_assignments, emp_Schreurs, is_night=False)
+        prev_block = get_last_consecutive_block_dates(prev_assignments, emp_603722, is_night=False)
         prev_len = len(prev_block)
 
         # Max 2 days in a row: for every triple d,d+1,d+2 -> sum <= 2
@@ -422,18 +422,18 @@ def auto_rooster(data, time_limit_s=60):
             d2 = dates_list[i + 2]
             model.Add(work_day[d2] == 0).OnlyEnforceIf([work_day[d], work_day[d1].Not()])
 
-    # 10.6) Teuna (602859): 7-on/7-off pattern using dates, respect prev_assignments
-    emp_deGroot = '602859'
-    if emp_deGroot in emp_ids:
+    # 10.6) (602859): 7-on/7-off pattern using dates, respect prev_assignments
+    emp_602859 = '602859'
+    if emp_602859 in emp_ids:
         # 1) forbid non-night shifts
         for s in shifts['shift_id']:
             if s not in night_shifts:
-                model.Add(x[(s, emp_deGroot)] == 0)
+                model.Add(x[(s, emp_602859)] == 0)
         # 2) day-level night bools (already have n_emp_date)
-        night_work_day = {d: n_emp_date[(emp_deGroot, d)] for d in dates_list}
+        night_work_day = {d: n_emp_date[(emp_602859, d)] for d in dates_list}
 
         # find last consecutive night block in prev_assignments (dates)
-        prev_nights = get_last_consecutive_block_dates(prev_assignments, emp_deGroot, is_night=True)
+        prev_nights = get_last_consecutive_block_dates(prev_assignments, emp_602859, is_night=True)
         period = 14
         # compute offset if we have prior info that constitutes a consistent phase
         prev_phase_offset = None
@@ -469,17 +469,17 @@ def auto_rooster(data, time_limit_s=60):
                     else:
                         model.Add(night_work_day[d] == 0).OnlyEnforceIf(vk)
 
-    # 10.8) Carolien (602056): max 3 shifts / week, only A or N
-    emp_vdKoppel = '602056'
-    if emp_vdKoppel in emp_ids:
+    # 10.8) (602056): max 3 shifts / week, only A or N
+    emp_602056 = '602056'
+    if emp_602056 in emp_ids:
         for w in weeks:
             s_list = shifts_by_week.get(w, [])
             if s_list:
-                model.Add(sum(x[(s, emp_vdKoppel)] for s in s_list) <= 3)
+                model.Add(sum(x[(s, emp_602056)] for s in s_list) <= 3)
                 for s in s_list:
                     shift_name = shifts.loc[shifts['shift_id'] == s, 'shift_name'].iloc[0]
                     if 'A' not in shift_name and 'N' not in shift_name:
-                        model.Add(x[(s, emp_vdKoppel)] == 0)
+                        model.Add(x[(s, emp_602056)] == 0)
                         
     ### Objective ###
     
