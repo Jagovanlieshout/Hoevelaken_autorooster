@@ -206,7 +206,7 @@ def auto_rooster(data, time_limit_s=60):
 
     # 7.1) Max consecutive nights (consider prev_assignments)
     for emp in emp_ids:
-        max_consec = 7 if emp in {str(602859)} else 5  # your CAO exemption set uses strings in your code earlier
+        max_consec = 7 if emp in {'602859-1'} else 5  # your CAO exemption set uses strings in your code earlier
         # previous night dates as date objects
         prev_night_dates = get_last_consecutive_block_dates(prev_assignments, emp, is_night=True)
         # current nights dates (unique sorted)
@@ -303,7 +303,12 @@ def auto_rooster(data, time_limit_s=60):
             model.Add(sum(x[(s, emp)] for s in window_shifts) + prev_count <= 35)
 
     # 7.4) Age > 55: no night shifts (respect exemptions)
-    CAO_7_4_exempt = {str(2097), str(602859)}
+    #CAO_7_4_exempt = {'2097-3', '602859-1'}
+    #CAO_7_4_exempt = workers[workers['nachten'] == 'uitsluitend']['medewerker_id'].astype(str).tolist()
+    # If nachten column is anything else than 'niet', put worker in CAO_7_4_exempt
+    CAO_7_4_exempt = workers[workers['nachten'] != 'niet']['medewerker_id'].astype(str).tolist()
+    
+    
     for emp in emp_ids:
         if emp in CAO_7_4_exempt:
             continue
@@ -430,6 +435,7 @@ def auto_rooster(data, time_limit_s=60):
     # 10.6) (602859-1): 7-on/7-off pattern using dates, respect prev_assignments
     emp_602859 = '602859-1'
     if emp_602859 in emp_ids:
+        print(f'Applying 7-on/7-off pattern for employee {emp_602859}')
         # 1) forbid non-night shifts
         for s in shifts['shift_id']:
             if s not in night_shifts:
@@ -440,6 +446,7 @@ def auto_rooster(data, time_limit_s=60):
         # find last consecutive night block in prev_assignments (dates)
         prev_nights = get_last_consecutive_block_dates(prev_assignments, emp_602859, is_night=True)
         period = 14
+        print(f'Previous consecutive night block for {emp_602859}: {prev_nights}')
         # compute offset if we have prior info that constitutes a consistent phase
         prev_phase_offset = None
         if prev_nights:
@@ -450,16 +457,31 @@ def auto_rooster(data, time_limit_s=60):
             try:
                 base = pd.to_datetime(dates_list[0])
                 prev_first = pd.to_datetime(prev_nights[0])
+                print(f'Computing prev_phase_offset for {emp_602859} using base {base.date()} and prev_first {prev_first.date()}')
                 prev_phase_offset = (prev_first - base).days % period
+                print(f'Computed prev_phase_offset for {emp_602859}: {prev_phase_offset}')
             except Exception:
                 prev_phase_offset = None
 
+        # unavailable dates for this emp
+        unavailable_dates = set()
+        onb_emp = onb[onb['Medewerker id'] == emp_602859]
+        for _, r in onb_emp.iterrows():
+            date_unb = pd.to_datetime(r['Datum']).date()
+            besch = str(r['Beschikbaarheid']).lower()
+            if besch != 'beschikbaar':
+                unavailable_dates.add(date_unb)
         if prev_phase_offset is not None:
             # enforce exact pattern consistent with prev_phase_offset
             for d in dates_list:
                 pos = ((pd.to_datetime(d) - pd.to_datetime(dates_list[0])).days - prev_phase_offset) % period
+                print(f'Date {d}: pos {pos} for emp {emp_602859}')
                 if pos < 7:
-                    model.Add(night_work_day[d] == 1)
+                    # check if date is in unavailable dates
+                    if d in unavailable_dates:
+                        model.Add(night_work_day[d] == 0)
+                    else:
+                        model.Add(night_work_day[d] == 1)
                 else:
                     model.Add(night_work_day[d] == 0)
         else:
@@ -716,7 +738,7 @@ def auto_rooster(data, time_limit_s=60):
     # 7) Equal distribution of amount of shifts per week per employee
     
     # Keep out Teuna (602859) from this penalty as she has fixed 7-on/7-off pattern
-    equal_dist_emp_ids = [e for e in emp_ids if e not in {'602859'}]
+    equal_dist_emp_ids = [e for e in emp_ids if e not in {'602859-1'}]
 
     # Count shifts per week per employee
     shifts_per_week = {}
