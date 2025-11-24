@@ -558,103 +558,106 @@ def auto_rooster(data, time_limit_s=60):
                     else:
                         model.Add(work_day[d] == 0).OnlyEnforceIf(vk)
     
-    #11.3) Achtereenvolgende diensten constraint for employees with either 'min_achtereenvolgende_diensten''or 'max_achtereenvolgende_diensten' field  
+    # 11.3) Achtereenvolgende diensten constraint for employees with either 'min_achtereenvolgende_diensten' or 'max_achtereenvolgende_diensten'
     for emp in emp_ids:
-        
-        # Extract the constraints for this employee
-    
+
         minc = workers.loc[workers['medewerker_id'] == emp, 'min_achtereenvolgende_diensten'].iloc[0]
-        maxc = workers.loc[workers['medewerker_id'] == emp, 'max_achtereenvolgende_diensten'].iloc[0]
+        maxc = workers.loc[workers['medewerker_id'] == emp, 'max_achtereenvolgende_diensten'].iloc[0]  # FIXED: use max column
         rest_after = workers.loc[workers['medewerker_id'] == emp, 'rust_na_werkperiode'].iloc[0]
-        if (minc is None or minc <= 0) and (maxc is None or maxc <= 0) and (rest_after is None or rest_after <= 0):
+
+        # If all constraints are absent or non-positive, skip
+        if (pd.isna(minc) or minc <= 0) and (pd.isna(maxc) or maxc <= 0) and (pd.isna(rest_after) or rest_after <= 0):
             continue
-        print(f'Applying standardized consecutive work/rest constraints for employee {emp}: minc={minc}, maxc={maxc}, rest_after={rest_after}')
 
+        # ensure ints and sensible defaults
+        minc = int(minc) if not pd.isna(minc) else 0
+        maxc = int(maxc) if not pd.isna(maxc) else 0
+        R = int(rest_after) if not pd.isna(rest_after) else 0
 
-        # Create day-level work variables for this employee
+        print(f'Applying standardized consecutive work/rest constraints for employee {emp}: minc={minc}, maxc={maxc}, rest_after={R}')
+
+        # Create day-level work variables and link to x
         work_day = {}
         for d in dates_list:
             w = model.NewBoolVar(f"work_{emp}_{d.isoformat()}")
             work_day[d] = w
-
             shifts_today = shifts_by_date.get(d, [])
             if shifts_today:
-                # w = 1 <=> works at least one shift today
                 model.Add(sum(x[(s, emp)] for s in shifts_today) >= 1).OnlyEnforceIf(w)
                 model.Add(sum(x[(s, emp)] for s in shifts_today) == 0).OnlyEnforceIf(w.Not())
             else:
-                # No shifts available that day
                 model.Add(w == 0)
 
-        # ---------------------------------------------------
-        # 3. Determine previous consecutive block length
-        # ---------------------------------------------------
-        prev_block = get_last_consecutive_block_dates(prev_assignments, emp, is_night=False)
-        prev_len = len(prev_block)
+        # -----------------------
+        # MAX consecutive constraint
+        # -----------------------
+        if maxc > 0:
+            # For every window of length maxc+1, sum <= maxc
+            for i in range(0, len(dates_list) - maxc):
+                window = [work_day[dates_list[i + j]] for j in range(maxc + 1)]
+                if i == 0:
+                    # take into account previous consecutive tail
+                    prev_block = get_last_consecutive_block_dates(prev_assignments, emp, is_night=False)
+                    prev_len = len(prev_block)
+                    offset = min(prev_len, maxc)
+                    model.Add(sum(window) + offset <= maxc)
+                else:
+                    model.Add(sum(window) <= maxc)
 
-        # ---------------------------------------------------
-        # 4. Apply MAX consecutive constraint
-        # ---------------------------------------------------
-        for i in range(len(dates_list) - maxc):
-            window = [work_day[dates_list[i + j]] for j in range(maxc + 1)]
-
-            # Use previous block if the window touches the start of the horizon
-            if i == 0:
-                offset = min(prev_len, maxc)
-                model.Add(sum(window) + offset <= maxc)
-            else:
-                model.Add(sum(window) <= maxc)
-
-        # ---------------------------------------------------
-        # 5. Apply MIN consecutive constraint 
-        # ---------------------------------------------------
-        if minc > 1:  # Only meaningful if minc >= 2
+        # -----------------------
+        # MIN consecutive constraint
+        # -----------------------
+        # Only applies meaningfully if minc >= 2
+        if minc >= 2:
             for i in range(1, len(dates_list)):
                 d_prev = dates_list[i - 1]
                 d = dates_list[i]
 
-                block_start = model.NewBoolVar(f"block_start_{emp}_{d}")
+                block_start = model.NewBoolVar(f"block_start_{emp}_{d.isoformat()}")
 
-                # block_start = 1 if (works today AND NOT yesterday)
-                model.Add(work_day[d] - work_day[d_prev] == block_start)
+                # block_start <=> (work_today AND NOT work_yesterday)
+                model.AddBoolAnd([work_day[d], work_day[d_prev].Not()]).OnlyEnforceIf(block_start)
+                model.AddBoolOr([work_day[d].Not(), work_day[d_prev]]).OnlyEnforceIf(block_start.Not())
 
-                # enforce minimum length continuation
+                # enforce minimum continuation: if block_start then next minc-1 days must be working
                 for k in range(minc - 1):
                     if i + k < len(dates_list):
                         model.Add(work_day[dates_list[i + k]] == 1).OnlyEnforceIf(block_start)
 
-        # ---------------------------------------------------
-        # 6. Apply REST after work block constraint
-        # ---------------------------------------------------
-        R = rest_after
+        # -----------------------
+        # REST after work block
+        # -----------------------
+        # previous consecutive block
+        prev_block = get_last_consecutive_block_dates(prev_assignments, emp, is_night=False)
+        prev_len = len(prev_block)
 
-        # 6a. Apply rest from previous block entering the horizon
-        if prev_len > 0:
+        # If prev block had a tail, enforce rest at start of horizon
+        if prev_len > 0 and R > 0:
             for i in range(min(R, len(dates_list))):
                 model.Add(work_day[dates_list[i]] == 0)
 
-        # 6b. Rest after any block ending inside the horizon
-        for i in range(len(dates_list) - 1):
-            d = dates_list[i]
-            d1 = dates_list[i + 1]
+        # Enforce R rest days after any end_block inside horizon
+        if R > 0:
+            for i in range(len(dates_list) - 1):
+                d = dates_list[i]
+                d1 = dates_list[i + 1]
+                end_block = model.NewBoolVar(f"end_block_{emp}_{d.isoformat()}")
 
-            end_block = model.NewBoolVar(f"end_block_{emp}_{d}")
+                # end_block <=> (work_today AND NOT work_tomorrow)
+                model.AddBoolAnd([work_day[d], work_day[d1].Not()]).OnlyEnforceIf(end_block)
+                model.AddBoolOr([work_day[d].Not(), work_day[d1]]).OnlyEnforceIf(end_block.Not())
 
-            # end_block = 1 if works today AND doesn't work tomorrow
-            model.Add(work_day[d] - work_day[d1] == end_block)
+                for r in range(1, R + 1):
+                    if i + r < len(dates_list):
+                        model.Add(work_day[dates_list[i + r]] == 0).OnlyEnforceIf(end_block)
 
-            # enforce R rest days
-            for r in range(1, R + 1):
-                if i + r < len(dates_list):
-                    model.Add(work_day[dates_list[i + r]] == 0).OnlyEnforceIf(end_block)
 
     ### Objective ###
     
-    # 1) Uncovered shifts penalties with lower weight for D4/A3
+    # 1) Uncovered shifts penalties with lower weight for non-required shifts
     uncovered_terms = []
     for _, r in shifts.iterrows():
         sid = int(r['shift_id'])
-        #weight = 0.5 if r['shift_name'] in ['D4', 'A3'] else 1.0
         if r['required'] == 0.5:
             print(f'Applying reduced uncovered weight for shift {sid} with required={r["required"]}')
             weight = 0.5 
