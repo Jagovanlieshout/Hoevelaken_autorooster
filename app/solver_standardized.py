@@ -3,7 +3,7 @@ import pandas as pd
 from ortools.sat.python import cp_model
 import datetime as dt
 
-def auto_rooster(data, time_limit_s=60):
+def auto_rooster_standardized(data, time_limit_s=60):
     """
     Main function to create an automatic schedule using OR-Tools CP-SAT solver.
     Expects preprocessed data dictionary with keys:

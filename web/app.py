@@ -32,7 +32,7 @@ def read_dataframe(file_storage):
     return pd.read_csv(file_storage, sep=sep)
 
 def read_workers(file_storage):
-    return pd.read_excel(file_storage, sheet_name='Tabellen', usecols='T:AF', skiprows=1)
+    return pd.read_excel(file_storage, sheet_name='Tabellen', usecols='T:AH', skiprows=1)
 
 def read_rooster_template(file_storage):
     return pd.read_excel(file_storage, sheet_name="Tabellen", usecols="E:P", skiprows=1)

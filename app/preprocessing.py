@@ -23,10 +23,17 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     df_shifts = df_rooster_template[df_rooster_template["actie"].str.lower() == "plannen"].copy()
     df_shifts = df_shifts.reset_index(drop=True)
 
-    # Convert "Ja"/"Nee" → 1/0
+    # Convert "Ja"/"Facultatief"/"Nee" → 1/0.5/0
     day_cols = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"]
-    df_shifts[day_cols] = df_shifts[day_cols].replace({"Ja": 1, "Nee": 0})
-
+    def convert_day_value(x):
+        if str(x).strip().lower() == "ja":
+            return 1
+        elif str(x).strip().lower() == "facultatief":
+            return 0.5
+        else:
+            return 0
+    for col in day_cols:
+        df_shifts[col] = df_shifts[col].apply(convert_day_value)
     # Convert time strings into datetime.time
     df_shifts["Begintijd"] = pd.to_datetime(df_shifts["Begintijd"], format="%H:%M:%S").dt.time
     df_shifts["Eindtijd"] = pd.to_datetime(df_shifts["Eindtijd"], format="%H:%M:%S").dt.time
@@ -62,7 +69,18 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
                     "start_time": row['Begintijd'],
                     "end_time": row['Eindtijd'],
                     "qualification": row['Deskundigheid'],
-                    "duration": row['Duur']
+                    "duration": row['Duur'],
+                    "required": 1
+                })
+            elif row[day] == 0.5:  # Facultatief
+                shift_requirements.append({
+                    "shift_name": row['Shifts'],
+                    "day_of_week": day_map[day],  # 0=Monday, etc.
+                    "start_time": row['Begintijd'],
+                    "end_time": row['Eindtijd'],
+                    "qualification": row['Deskundigheid'],
+                    "duration": row['Duur'],
+                    "required": 0.5
                 })
 
     ### Previous assignments processing ###
@@ -157,14 +175,21 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     shifts['day_key'] = list(zip(shifts['week'], shifts['day_of_week']))
 
     # add is_night column based on shift_name (e.g., 'N' is night)
-    shifts['is_night'] = shifts['shift_name'].apply(lambda x: 1 if x == 'N' else 0)
+    #shifts['is_night'] = shifts['shift_name'].apply(lambda x: 1 if x == 'N' else 0)
+    
+    # add is_night based on the difference between start_time and end_time being negative
+    # compute per-shift whether end_time < start_time (crosses midnight)
+    shifts['is_night'] = (
+        pd.to_datetime(shifts['end_time'].astype(str)) -
+        pd.to_datetime(shifts['start_time'].astype(str))
+    ) < pd.Timedelta(0)
     shifts['is_night'] = shifts['is_night'].astype(bool)
     shifts['shift_id'] = shifts.index.astype(int)
     
     shifts['qualification'] = shifts['qualification'].apply(
         lambda q: ast.literal_eval(q) if isinstance(q, str) else q)
     
-    shifts = shifts[['shift_id', 'shift_name', 'shift_date', 'week', 'global_week', 'day_of_week', 'absolute_day', 'start_time', 'end_time', 'duration_min', 'qualification', 'is_night', 'day_key']]
+    shifts = shifts[['shift_id', 'shift_name', 'shift_date', 'week', 'global_week', 'day_of_week', 'absolute_day', 'start_time', 'end_time', 'duration_min', 'qualification', 'is_night', 'day_key', 'required']]
     
     shifts_constant = shifts.copy()
     # Remove all shifts where shift_name = KOK or FM
@@ -250,7 +275,49 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     workers['leeftijd'] = workers['geboortedatum'].apply(
         lambda x: current_date.year - x.year - ((current_date.month, current_date.day) < (x.month, x.day))
     )
+        
+    def parse_list(x, cast=str):
+        if pd.isna(x) or str(x).strip() == '':
+            return []
+        return [cast(s.strip()) for s in str(x).split(',')]
+
+    workers['voorkeur_dagdelen'] = workers['voorkeur dagdelen (dag, avond, nacht)'].apply(
+    lambda x: parse_list(x, str))
     
+    # split voorkeur_dagdelen list into three separate columns (safe for missing items)
+    workers['voorkeur_dag'] = workers['voorkeur_dagdelen'].apply(
+        lambda x: x[0].strip() if isinstance(x, (list, tuple)) and len(x) > 0 and isinstance(x[0], str) else ''
+    )
+    workers['voorkeur_avond'] = workers['voorkeur_dagdelen'].apply(
+        lambda x: x[1].strip() if isinstance(x, (list, tuple)) and len(x) > 1 and isinstance(x[1], str) else ''
+    )
+    workers['voorkeur_nacht'] = workers['voorkeur_dagdelen'].apply(
+        lambda x: x[2].strip() if isinstance(x, (list, tuple)) and len(x) > 2 and isinstance(x[2], str) else ''
+    )
+    
+
+    workers['patroon'] = workers['patroon'].apply(
+        lambda x: parse_list(x, int))
+
+    workers['achtereenvolgende_diensten'] = workers['achtereenvolgende diensten'].apply(
+        lambda x: parse_list(x, int))
+    
+    # split achtereenvolgende_diensten list into two separate columns named achtereenvolgende_diensten_min and achtereenvolgende_diensten_max (safe for missing items)
+    workers['min_achtereenvolgende_diensten'] = workers['achtereenvolgende_diensten'].apply(
+        lambda x: x[0] if isinstance(x, (list, tuple)) and len(x) > 0 else 0
+    )
+    workers['max_achtereenvolgende_diensten'] = workers['achtereenvolgende_diensten'].apply(
+        lambda x: x[1] if isinstance(x, (list, tuple)) and len(x) > 1 else 0
+    )
+
+    workers['rust_na_werkperiode'] = workers['rust na werkperiode'].fillna(0).astype(int)
+    
+    print('NEW WORKERS COLUMNS:')
+    print(workers.columns)
+    #print dtypes of workers
+    print(workers.dtypes)
+    
+        
     print('Worker data loaded')
     # Create IDs
     emp_ids = workers['medewerker_id'].tolist()

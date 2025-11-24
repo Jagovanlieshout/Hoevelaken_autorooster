@@ -128,6 +128,20 @@ def auto_rooster(data, time_limit_s=60):
                 model.Add(sum(x[(s, emp)] for s in night_ids) == 0).OnlyEnforceIf(b.Not())
             else:
                 model.Add(b == 0)
+    
+    # emp_date: 1 iff employee emp works on date d (date object)
+    emp_date = {}
+    for emp in emp_ids:
+        for d in dates_list:
+            b = model.NewBoolVar(f"n_emp{emp}_d{d.isoformat()}")
+            emp_date[(emp, d)] = b
+            shift_ids = shifts_by_date.get(d, [])
+            if shift_ids:
+                # if b then sum >=1, else sum == 0
+                model.Add(sum(x[(s, emp)] for s in shift_ids) >= 1).OnlyEnforceIf(b)
+                model.Add(sum(x[(s, emp)] for s in shift_ids) == 0).OnlyEnforceIf(b.Not())
+            else:
+                model.Add(b == 0)
 
     ### Constraints ###
 
@@ -303,10 +317,8 @@ def auto_rooster(data, time_limit_s=60):
             model.Add(sum(x[(s, emp)] for s in window_shifts) + prev_count <= 35)
 
     # 7.4) Age > 55: no night shifts (respect exemptions)
-    #CAO_7_4_exempt = {'2097-3', '602859-1'}
-    #CAO_7_4_exempt = workers[workers['nachten'] == 'uitsluitend']['medewerker_id'].astype(str).tolist()
-    # If nachten column is anything else than 'niet', put worker in CAO_7_4_exempt
-    CAO_7_4_exempt = workers[workers['nachten'] != 'niet']['medewerker_id'].astype(str).tolist()
+    # If voorkeur_nacht column is anything else than 'niet', put worker in CAO_7_4_exempt
+    CAO_7_4_exempt = workers[workers['voorkeur_nacht'] != 'niet']['medewerker_id'].astype(str).tolist()
     
     
     for emp in emp_ids:
@@ -334,9 +346,9 @@ def auto_rooster(data, time_limit_s=60):
             if min(emp_level) > req_level:
                 model.Add(x[(sid, emp)] == 0)
     
-    # 9) Use 'nachten' column to enforce the night shift preferences
+    # 9) Use 'voorkeur_nacht' column to enforce the night shift preferences
     for emp in emp_ids:
-        night_emp = workers.loc[workers['medewerker_id'] == emp, 'nachten'].iloc[0]
+        night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
         if night_emp == 'Niet':
             for s in night_shifts:
                 model.Add(x[(s, emp)] == 0)
@@ -432,70 +444,6 @@ def auto_rooster(data, time_limit_s=60):
             d2 = dates_list[i + 2]
             model.Add(work_day[d2] == 0).OnlyEnforceIf([work_day[d], work_day[d1].Not()])
 
-    # 10.6) (602859-1): 7-on/7-off pattern using dates, respect prev_assignments
-    emp_602859 = '602859-1'
-    if emp_602859 in emp_ids:
-        print(f'Applying 7-on/7-off pattern for employee {emp_602859}')
-        # 1) forbid non-night shifts
-        for s in shifts['shift_id']:
-            if s not in night_shifts:
-                model.Add(x[(s, emp_602859)] == 0)
-        # 2) day-level night bools (already have n_emp_date)
-        night_work_day = {d: n_emp_date[(emp_602859, d)] for d in dates_list}
-
-        # find last consecutive night block in prev_assignments (dates)
-        prev_nights = get_last_consecutive_block_dates(prev_assignments, emp_602859, is_night=True)
-        period = 14
-        print(f'Previous consecutive night block for {emp_602859}: {prev_nights}')
-        # compute offset if we have prior info that constitutes a consistent phase
-        prev_phase_offset = None
-        if prev_nights:
-            # if prev tail has at least one day, we can compute candidate offset: (last_day_index mod 14)
-            # choose earliest prev_night for offset calculation
-            # offset = (date_index_of_prev_first - date0_index) % 14 where date_index_of_prev_first relates to a continuous day index
-            # simpler: take numeric days since reference date0
-            try:
-                base = pd.to_datetime(dates_list[0])
-                prev_first = pd.to_datetime(prev_nights[0])
-                print(f'Computing prev_phase_offset for {emp_602859} using base {base.date()} and prev_first {prev_first.date()}')
-                prev_phase_offset = (prev_first - base).days % period
-                print(f'Computed prev_phase_offset for {emp_602859}: {prev_phase_offset}')
-            except Exception:
-                prev_phase_offset = None
-
-        # unavailable dates for this emp
-        unavailable_dates = set()
-        onb_emp = onb[onb['Medewerker id'] == emp_602859]
-        for _, r in onb_emp.iterrows():
-            date_unb = pd.to_datetime(r['Datum']).date()
-            besch = str(r['Beschikbaarheid']).lower()
-            if besch != 'beschikbaar':
-                unavailable_dates.add(date_unb)
-        if prev_phase_offset is not None:
-            # enforce exact pattern consistent with prev_phase_offset
-            for d in dates_list:
-                pos = ((pd.to_datetime(d) - pd.to_datetime(dates_list[0])).days - prev_phase_offset) % period
-                print(f'Date {d}: pos {pos} for emp {emp_602859}')
-                if pos < 7:
-                    # check if date is in unavailable dates
-                    if d in unavailable_dates:
-                        model.Add(night_work_day[d] == 0)
-                    else:
-                        model.Add(night_work_day[d] == 1)
-                else:
-                    model.Add(night_work_day[d] == 0)
-        else:
-            # allow solver to choose a phase
-            offsets = [model.NewBoolVar(f"teuna_phase_{k}") for k in range(period)]
-            model.Add(sum(offsets) == 1)
-            for k, vk in enumerate(offsets):
-                for d in dates_list:
-                    pos = ((pd.to_datetime(d) - pd.to_datetime(dates_list[0])).days - k) % period
-                    if pos < 7:
-                        model.Add(night_work_day[d] == 1).OnlyEnforceIf(vk)
-                    else:
-                        model.Add(night_work_day[d] == 0).OnlyEnforceIf(vk)
-
     # 10.8) (602056): max 3 shifts / week, only A or N
     emp_602056 = '602056'
     if emp_602056 in emp_ids:
@@ -510,12 +458,26 @@ def auto_rooster(data, time_limit_s=60):
                         
     # Standardized constraints
     
-    # 11.1) pattern constraint for employees with non empty 'patroon' field
+    # 11.1) Use 'voorkeur_dagdelen' column to enforce shift preferences
     for emp in emp_ids:
-        patroon = str(workers.loc[workers['medewerker_id'] == emp, 'patroon'].iloc[0]).strip().lower()
-        night_emp = str(workers.loc[workers['medewerker_id'] == emp, 'nachten'].iloc[0]).strip().lower()
+        #pref_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dagdelen'].iloc[0]
+        #day_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dag'].iloc[0]
+        #evening_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_avond'].iloc[0]
+        night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
+        if night_emp == 'Niet':
+            for s in night_shifts:
+                model.Add(x[(s, emp)] == 0)
+        elif night_emp == 'uitsluitend':
+            for s in shifts['shift_id']:
+                if s not in night_shifts:
+                    model.Add(x[(s, emp)] == 0)
+    
+    # 11.2) pattern constraint for employees with non empty 'patroon' field
+    for emp in emp_ids:
+        patroon = workers.loc[workers['medewerker_id'] == emp, 'patroon'].iloc[0]
+        night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
         
-        if patroon and patroon != 'nan':
+        if patroon and patroon != []:
             print(f'Applying pattern constraint for employee {emp} with pattern {patroon}')
         else:
             continue
@@ -524,17 +486,181 @@ def auto_rooster(data, time_limit_s=60):
             night = True
         else:
             night = False
-        pattern_length = int(float(patroon))
-        print(f'Pattern length for employee {emp}: {pattern_length} using {night} nightshifts')
+        on_days = patroon[0]
+        off_days = patroon[1]
+        pattern_length = on_days + off_days
         
-                        
+        print(f'Applying {on_days}-on/{on_days}-off for a {pattern_length} day pattern for employee {emp}')
+            
+        # forbid non-night shifts if applicable
+        if night_emp == 'uitsluitend':
+            night = True
+            for s in shifts['shift_id']:
+                if s not in night_shifts:
+                    model.Add(x[(s, emp)] == 0)
+            # day-level night bools (already have n_emp_date)
+            #work_day_bool = {d: emp_date[(emp, d)] for d in dates_list}
+        else:
+            night = False
+        # day-level night bools (already have n_emp_date)
+        work_day = {d: emp_date[(emp, d)] for d in dates_list}
+
+        # find last consecutive night block in prev_assignments (dates)
+        prev_shift_block = get_last_consecutive_block_dates(prev_assignments, emp, is_night=night)
+        period = pattern_length
+        print(f'Previous consecutive night block for {emp}: {prev_shift_block}')
+        # compute offset if we have prior info that constitutes a consistent phase
+        prev_phase_offset = None
+        if prev_shift_block:
+            # if prev tail has at least one day, we can compute candidate offset: (last_day_index mod 14)
+            # choose earliest prev_night for offset calculation
+            # offset = (date_index_of_prev_first - date0_index) % 14 where date_index_of_prev_first relates to a continuous day index
+            # simpler: take numeric days since reference date0
+            try:
+                base = pd.to_datetime(dates_list[0])
+                prev_first = pd.to_datetime(prev_shift_block[0])
+                print(f'Computing prev_phase_offset for {emp} using base {base.date()} and prev_first {prev_first.date()}')
+                prev_phase_offset = (prev_first - base).days % period
+                print(f'Computed prev_phase_offset for {emp}: {prev_phase_offset}')
+            except Exception:
+                prev_phase_offset = None
+
+        # unavailable dates for this emp
+        unavailable_dates = set()
+        onb_emp = onb[onb['Medewerker id'] == emp]
+        for _, r in onb_emp.iterrows():
+            date_unb = pd.to_datetime(r['Datum']).date()
+            besch = str(r['Beschikbaarheid']).lower()
+            if besch != 'beschikbaar':
+                unavailable_dates.add(date_unb)
+        if prev_phase_offset is not None:
+            # enforce exact pattern consistent with prev_phase_offset
+            for d in dates_list:
+                pos = ((pd.to_datetime(d) - pd.to_datetime(dates_list[0])).days - prev_phase_offset) % period
+                print(f'Date {d}: pos {pos} for emp {emp}')
+                if pos < on_days:
+                    # check if date is in unavailable dates
+                    if d in unavailable_dates:
+                        model.Add(work_day[d] == 0)
+                    else:
+                        model.Add(work_day[d] == 1)
+                else:
+                    model.Add(work_day[d] == 0)
+        else:
+            # allow solver to choose a phase
+            offsets = [model.NewBoolVar(f"teuna_phase_{k}") for k in range(period)]
+            model.Add(sum(offsets) == 1)
+            for k, vk in enumerate(offsets):
+                for d in dates_list:
+                    pos = ((pd.to_datetime(d) - pd.to_datetime(dates_list[0])).days - k) % period
+                    if pos < on_days:
+                        model.Add(work_day[d] == 1).OnlyEnforceIf(vk)
+                    else:
+                        model.Add(work_day[d] == 0).OnlyEnforceIf(vk)
+    
+    #11.3) Achtereenvolgende diensten constraint for employees with either 'min_achtereenvolgende_diensten''or 'max_achtereenvolgende_diensten' field  
+    for emp in emp_ids:
+        
+        # Extract the constraints for this employee
+    
+        minc = workers.loc[workers['medewerker_id'] == emp, 'min_achtereenvolgende_diensten'].iloc[0]
+        maxc = workers.loc[workers['medewerker_id'] == emp, 'max_achtereenvolgende_diensten'].iloc[0]
+        rest_after = workers.loc[workers['medewerker_id'] == emp, 'rust_na_werkperiode'].iloc[0]
+        if (minc is None or minc <= 0) and (maxc is None or maxc <= 0) and (rest_after is None or rest_after <= 0):
+            continue
+        print(f'Applying standardized consecutive work/rest constraints for employee {emp}: minc={minc}, maxc={maxc}, rest_after={rest_after}')
+
+
+        # Create day-level work variables for this employee
+        work_day = {}
+        for d in dates_list:
+            w = model.NewBoolVar(f"work_{emp}_{d.isoformat()}")
+            work_day[d] = w
+
+            shifts_today = shifts_by_date.get(d, [])
+            if shifts_today:
+                # w = 1 <=> works at least one shift today
+                model.Add(sum(x[(s, emp)] for s in shifts_today) >= 1).OnlyEnforceIf(w)
+                model.Add(sum(x[(s, emp)] for s in shifts_today) == 0).OnlyEnforceIf(w.Not())
+            else:
+                # No shifts available that day
+                model.Add(w == 0)
+
+        # ---------------------------------------------------
+        # 3. Determine previous consecutive block length
+        # ---------------------------------------------------
+        prev_block = get_last_consecutive_block_dates(prev_assignments, emp, is_night=False)
+        prev_len = len(prev_block)
+
+        # ---------------------------------------------------
+        # 4. Apply MAX consecutive constraint
+        # ---------------------------------------------------
+        for i in range(len(dates_list) - maxc):
+            window = [work_day[dates_list[i + j]] for j in range(maxc + 1)]
+
+            # Use previous block if the window touches the start of the horizon
+            if i == 0:
+                offset = min(prev_len, maxc)
+                model.Add(sum(window) + offset <= maxc)
+            else:
+                model.Add(sum(window) <= maxc)
+
+        # ---------------------------------------------------
+        # 5. Apply MIN consecutive constraint 
+        # ---------------------------------------------------
+        if minc > 1:  # Only meaningful if minc >= 2
+            for i in range(1, len(dates_list)):
+                d_prev = dates_list[i - 1]
+                d = dates_list[i]
+
+                block_start = model.NewBoolVar(f"block_start_{emp}_{d}")
+
+                # block_start = 1 if (works today AND NOT yesterday)
+                model.Add(work_day[d] - work_day[d_prev] == block_start)
+
+                # enforce minimum length continuation
+                for k in range(minc - 1):
+                    if i + k < len(dates_list):
+                        model.Add(work_day[dates_list[i + k]] == 1).OnlyEnforceIf(block_start)
+
+        # ---------------------------------------------------
+        # 6. Apply REST after work block constraint
+        # ---------------------------------------------------
+        R = rest_after
+
+        # 6a. Apply rest from previous block entering the horizon
+        if prev_len > 0:
+            for i in range(min(R, len(dates_list))):
+                model.Add(work_day[dates_list[i]] == 0)
+
+        # 6b. Rest after any block ending inside the horizon
+        for i in range(len(dates_list) - 1):
+            d = dates_list[i]
+            d1 = dates_list[i + 1]
+
+            end_block = model.NewBoolVar(f"end_block_{emp}_{d}")
+
+            # end_block = 1 if works today AND doesn't work tomorrow
+            model.Add(work_day[d] - work_day[d1] == end_block)
+
+            # enforce R rest days
+            for r in range(1, R + 1):
+                if i + r < len(dates_list):
+                    model.Add(work_day[dates_list[i + r]] == 0).OnlyEnforceIf(end_block)
+
     ### Objective ###
     
     # 1) Uncovered shifts penalties with lower weight for D4/A3
     uncovered_terms = []
     for _, r in shifts.iterrows():
         sid = int(r['shift_id'])
-        weight = 0.5 if r['shift_name'] in ['D4', 'A3'] else 1.0
+        #weight = 0.5 if r['shift_name'] in ['D4', 'A3'] else 1.0
+        if r['required'] == 0.5:
+            print(f'Applying reduced uncovered weight for shift {sid} with required={r["required"]}')
+            weight = 0.5 
+        else:
+            weight = 1.0
+        
         uncovered_terms.append(weight * u[sid])
 
     # 2) Under-coverage penalties for non weekend workers
@@ -799,15 +925,16 @@ def auto_rooster(data, time_limit_s=60):
 
             week_balance_penalties[(emp, w)] = week_dev_sq        
 
-    # 8) Use 'nachten' column to penalize employees with 'overig' for each night shift they are assigned to
+    # 8) Use 'voorkeur_nacht' column to penalize employees with 'overig' for each night shift they are assigned to
     overig_night_penalties = []
     for emp in emp_ids:
-        night_emp = workers.loc[workers['medewerker_id'] == emp, 'nachten'].iloc[0]
+        night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
         if night_emp == 'overig':
             for s in night_shifts:
                 pen_var = model.NewBoolVar(f"overigNightPenalty_e{emp}_s{s}")
                 model.Add(pen_var == x[(s, emp)])
                 overig_night_penalties.append(pen_var)
+    
     # 9) Give a small bonus for employees working their preferred shifts
     preferred_shift_bonus = []
     
