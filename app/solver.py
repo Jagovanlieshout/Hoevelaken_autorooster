@@ -75,11 +75,14 @@ def auto_rooster(data, time_limit_s=60):
     for _, r in shifts.iterrows():
         sid = int(r['shift_id'])
         shift_name = r['shift_name']
-        if 'D' in shift_name:
+        #if 'D' in shift_name:
+        if r['is_day']:
             shift_type_map[sid] = 'D'
-        elif 'A' in shift_name:
+        #elif 'A' in shift_name:
+        elif r['is_evening']:
             shift_type_map[sid] = 'A'
-        elif 'N' in shift_name:
+        #elif 'N' in shift_name:
+        elif r['is_night']:
             shift_type_map[sid] = 'N'
         else:
             shift_type_map[sid] = 'Other'
@@ -461,8 +464,31 @@ def auto_rooster(data, time_limit_s=60):
     # 11.1) Use 'voorkeur_dagdelen' column to enforce shift preferences
     for emp in emp_ids:
         #pref_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dagdelen'].iloc[0]
-        #day_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dag'].iloc[0]
-        #evening_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_avond'].iloc[0]
+        day_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dag'].iloc[0]
+        if day_emp == 'Niet':
+            for shift in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(shift, 'Other')
+                if shift_type_map_value in {'D', 'A'}:
+                    model.Add(x[(shift, emp)] == 0)
+        elif day_emp == 'uitsluitend':
+            for shift in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(shift, 'Other')
+                if shift_type_map_value not in {'D', 'A'}:
+                    model.Add(x[(shift, emp)] == 0)
+        
+        evening_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_avond'].iloc[0]
+        if evening_emp == 'Niet':
+            for shift in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(shift, 'Other')
+                if shift_type_map_value in {'A'}:
+                    model.Add(x[(shift, emp)] == 0)
+                    
+        elif day_emp == 'uitsluitend':
+            for shift in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(shift, 'Other')
+                if shift_type_map_value not in {'A'}:
+                    model.Add(x[(shift, emp)] == 0)
+        
         night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
         if night_emp == 'Niet':
             for s in night_shifts:
@@ -928,15 +954,34 @@ def auto_rooster(data, time_limit_s=60):
 
             week_balance_penalties[(emp, w)] = week_dev_sq        
 
-    # 8) Use 'voorkeur_nacht' column to penalize employees with 'overig' for each night shift they are assigned to
-    overig_night_penalties = []
+    # 8) Use 'voorkeur' columns to penalize employees with 'overig' for each shift they are assigned to
+    overig_penalties = []
     for emp in emp_ids:
         night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
         if night_emp == 'overig':
             for s in night_shifts:
                 pen_var = model.NewBoolVar(f"overigNightPenalty_e{emp}_s{s}")
                 model.Add(pen_var == x[(s, emp)])
-                overig_night_penalties.append(pen_var)
+                overig_penalties.append(pen_var)
+        
+        day_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dag'].iloc[0]
+        if day_emp == 'overig':
+            for s in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(s, 'Other')
+                if shift_type_map_value in {'D'}:
+                    pen_var = model.NewBoolVar(f"overigDayPenalty_e{emp}_s{s}")
+                    model.Add(pen_var == x[(s, emp)])
+                    overig_penalties.append(pen_var)
+        
+        evening_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_avond'].iloc[0]
+        if evening_emp == 'overig':
+            for s in shifts['shift_id']:
+                shift_type_map_value = shift_type_map.get(s, 'Other')
+                if shift_type_map_value in {'A'}:
+                    pen_var = model.NewBoolVar(f"overigEveningPenalty_e{emp}_s{s}")
+                    model.Add(pen_var == x[(s, emp)])
+                    overig_penalties.append(pen_var)
+    
     
     # 9) Give a small bonus for employees working their preferred shifts
     preferred_shift_bonus = []
@@ -981,8 +1026,7 @@ def auto_rooster(data, time_limit_s=60):
                 model.AddMultiplicationEquality(p, [x[(sid, emp)], penalty_value])
 
                 deskundigheid_penalties.append(p)
-        
-            
+                
     # Combine all into one objective
     model.Minimize(
         10 * sum(uncovered_terms) +                          # main uncovered penalty
@@ -993,7 +1037,7 @@ def auto_rooster(data, time_limit_s=60):
         0.5 * sum(rest_after_night_penalties) +         # soft penalty for insufficient rest after night blocks
         0.1 * sum(unequal_shift_penalties) +            # soft penalty for uneven shift type distribution
         0.1 * sum(week_balance_penalties.values()) +   # soft penalty for unequal distribution of shifts per week
-        1 * sum(overig_night_penalties) -              # soft penalty for 'overig' night shifts
+        1 * sum(overig_penalties) -              # soft penalty for 'overig' night shifts
         0.1 * sum(preferred_shift_bonus) +              # small bonus for preferred shifts
         0.1 * sum(deskundigheid_penalties)                 # soft penalty for higher than required deskundigheid
     )
@@ -1071,7 +1115,7 @@ def auto_rooster(data, time_limit_s=60):
         print("Total insufficient rest after night penalties:", sum(solver.Value(v) for v in rest_after_night_penalties))
         print("Total unequal shift type distribution penalties:", sum(solver.Value(v) for v in unequal_shift_penalties))
         print("Total weekly balance penalties:", sum(solver.Value(v) for v in week_balance_penalties.values()))
-        print("Total 'overig' night shift penalties:", sum(solver.Value(v) for v in overig_night_penalties))
+        print("Total 'overig' shift penalties:", sum(solver.Value(v) for v in overig_penalties))
         print("Total preferred shift bonuses:", sum(solver.Value(v) for v in preferred_shift_bonus))
         print("Total deskundigheid penalties:", sum(solver.Value(v) for v in deskundigheid_penalties))
         

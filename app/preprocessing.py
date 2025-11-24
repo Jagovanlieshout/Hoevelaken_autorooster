@@ -173,9 +173,6 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
 
     # Day key for grouping
     shifts['day_key'] = list(zip(shifts['week'], shifts['day_of_week']))
-
-    # add is_night column based on shift_name (e.g., 'N' is night)
-    #shifts['is_night'] = shifts['shift_name'].apply(lambda x: 1 if x == 'N' else 0)
     
     # add is_night based on the difference between start_time and end_time being negative
     # compute per-shift whether end_time < start_time (crosses midnight)
@@ -185,11 +182,27 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     ) < pd.Timedelta(0)
     shifts['is_night'] = shifts['is_night'].astype(bool)
     shifts['shift_id'] = shifts.index.astype(int)
+
+    # add is_evening based on start time being >= 12:00, and difference between start_time and end_time being positive
+    shifts['is_evening'] = (
+        (pd.to_datetime(shifts['start_time'].astype(str)).dt.hour >= 12) &
+        ((pd.to_datetime(shifts['end_time'].astype(str)) -
+          pd.to_datetime(shifts['start_time'].astype(str))) > pd.Timedelta(0))
+    )
+    shifts['is_evening'] = shifts['is_evening'].astype(bool)
+    shifts['shift_id'] = shifts.index.astype(int)
+    
+    # add is_day based on start time being < 12:00, and difference between start_time and end_time being positive
+    shifts['is_day'] = (
+        (pd.to_datetime(shifts['start_time'].astype(str)).dt.hour < 12) &
+        ((pd.to_datetime(shifts['end_time'].astype(str)) -
+          pd.to_datetime(shifts['start_time'].astype(str))) > pd.Timedelta(0))
+    )
     
     shifts['qualification'] = shifts['qualification'].apply(
         lambda q: ast.literal_eval(q) if isinstance(q, str) else q)
     
-    shifts = shifts[['shift_id', 'shift_name', 'shift_date', 'week', 'global_week', 'day_of_week', 'absolute_day', 'start_time', 'end_time', 'duration_min', 'qualification', 'is_night', 'day_key', 'required']]
+    shifts = shifts[['shift_id', 'shift_name', 'shift_date', 'week', 'global_week', 'day_of_week', 'absolute_day', 'start_time', 'end_time', 'duration_min', 'qualification','is_day', 'is_evening', 'is_night', 'day_key', 'required']]
     
     shifts_constant = shifts.copy()
     # Remove all shifts where shift_name = KOK or FM
