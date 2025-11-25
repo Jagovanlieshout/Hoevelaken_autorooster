@@ -2,6 +2,7 @@
 import pandas as pd
 import datetime as dt
 import ast
+import re
 
 def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFrame, df_onb: pd.DataFrame, prev_assignments: pd.DataFrame, df_vastrooster: pd.DataFrame, num_weeks: int = 4):
     """
@@ -37,13 +38,23 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     # Convert time strings into datetime.time
     df_shifts["Begintijd"] = pd.to_datetime(df_shifts["Begintijd"], format="%H:%M:%S").dt.time
     df_shifts["Eindtijd"] = pd.to_datetime(df_shifts["Eindtijd"], format="%H:%M:%S").dt.time
+    
+    print(f'Deskundigheid pre parse samples: {df_shifts["Deskundigheid"].head()}')
 
-    # Convert deskundigheid field: extract numeric code
-    # Example: "2. Verzorgende" → 2
-    df_shifts["Deskundigheid"] = df_shifts["Deskundigheid"].astype(str).str.extract(r"(\d+)").astype(int)
+    # if deskundigheid is a string with , split into list of ints, else convert to int (e.g. 1. Verpleegkundige, 2. Verzorgende → [1,2], 2. Verzorgende → [2])
+    def parse_desk(x):
+        if pd.isna(x):
+            return []
+        if isinstance(x, str):
+            nums = re.findall(r'\b\d+\b', x)
+            return [int(n) for n in nums]
+        else:
+            return [int(x)]
 
-    # Convert to list format (your code expects: [2], or sometimes multiple)
-    df_shifts["Deskundigheid"] = df_shifts["Deskundigheid"].apply(lambda x: [x])
+
+    df_shifts["Deskundigheid"] = df_shifts["Deskundigheid"].apply(parse_desk)
+    
+    print(f'shift deskundigheid samples: {df_shifts["Deskundigheid"].head()}')
 
     # Compute duration in hours
     df_shifts["Duur"] = (
@@ -52,6 +63,7 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     ).dt.total_seconds() / 3600
 
     # Fix negative durations (crosses midnight)
+
     df_shifts.loc[df_shifts["Duur"] < 0, "Duur"] += 24
 
     # Convert to long format: each row = one shift on one day
@@ -86,8 +98,6 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     ### Previous assignments processing ###
     if prev_assignments is not None and not prev_assignments.empty:
         df = prev_assignments.copy()
-        print("Processing previous assignments:")
-        print(df.head())
 
         #drop medewerker id if exists
         if 'Medewerker id' in df.columns:
@@ -324,11 +334,6 @@ def preprocess_data(df_werknemers: pd.DataFrame, df_rooster_template: pd.DataFra
     )
 
     workers['rust_na_werkperiode'] = workers['rust na werkperiode'].fillna(0).astype(int)
-    
-    print('NEW WORKERS COLUMNS:')
-    print(workers.columns)
-    #print dtypes of workers
-    print(workers.dtypes)
     
         
     print('Worker data loaded')

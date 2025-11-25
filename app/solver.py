@@ -339,9 +339,11 @@ def auto_rooster(data, time_limit_s=60):
         # required qualification → take minimum qualification level for shift
         req_quals = shift_row['qualification']
         if isinstance(req_quals, list):
-            req_level = min(req_quals)   # e.g., [2,3] → requires at least level 2
+            req_level = max(req_quals)   # e.g., [1,2] → requires level 3, but 2 is preferred (see objective function 11)
         else:
             req_level = int(req_quals)
+        
+        print(f"Shift {sid} requires qualification level {req_level}")
 
         for emp in emp_ids:
             emp_level = workers.loc[workers['medewerker_id'] == emp, 'deskundigheid'].iloc[0]
@@ -359,105 +361,6 @@ def auto_rooster(data, time_limit_s=60):
             for s in shifts['shift_id']:
                 if s not in night_shifts:
                     model.Add(x[(s, emp)] == 0)
-        
-
-    # ---------- Persoonlijke wensen ----------
-
-    # 10.1) (2097) only nights
-    emp_2097 = '2097'
-    if emp_2097 in emp_ids:
-        for s in shifts['shift_id']:
-            if s not in night_shifts:
-                model.Add(x[(s, emp_2097)] == 0)
-
-    # 10.2) (2653) only weekends -> use day_of_week from shift row
-    emp_2653 = '2653'
-    if emp_2653 in emp_ids:
-        for _, r in shifts.iterrows():
-            s = int(r['shift_id'])
-            dow = int(r['day_of_week'])
-            if dow not in [5, 6]:
-                model.Add(x[(s, emp_2653)] == 0)
-
-    # 10.3) (3888): Friday evening (shift_name has 'A') or weekends
-    emp_3888 = '3888'
-    if emp_3888 in emp_ids:
-        for _, r in shifts.iterrows():
-            s = int(r['shift_id'])
-            dow = int(r['day_of_week'])
-            shift_name = r['shift_name']
-            if not ((dow == 4 and 'A' in shift_name) or dow in [5, 6]):
-                model.Add(x[(s, emp_3888)] == 0)
-
-    # 10.4) (601011): No Mon/Tue/Wed
-    emp_601011 = '601011'
-    if emp_601011 in emp_ids:
-        for _, r in shifts.iterrows():
-            s = int(r['shift_id'])
-            dow = int(r['day_of_week'])
-            if dow in [0, 1, 2]:
-                model.Add(x[(s, emp_601011)] == 0)
-
-    # 10.5) (603722): max 2 days in row and 2 days off after block, with prev_assignments considered
-    emp_603722 = '603722-1'
-    if emp_603722 in emp_ids:
-        # day-level bools keyed by calendar date
-        work_day = {}
-        for d in dates_list:
-            w = model.NewBoolVar(f"work_{emp_603722}_{d.isoformat()}")
-            work_day[d] = w
-            shifts_today = shifts_by_date.get(d, [])
-            if shifts_today:
-                model.Add(sum(x[(s, emp_603722)] for s in shifts_today) >= 1).OnlyEnforceIf(w)
-                model.Add(sum(x[(s, emp_603722)] for s in shifts_today) == 0).OnlyEnforceIf(w.Not())
-            else:
-                model.Add(w == 0)
-
-        # incorporate previous tail block length (dates)
-        prev_block = get_last_consecutive_block_dates(prev_assignments, emp_603722, is_night=False)
-        prev_len = len(prev_block)
-
-        # Max 2 days in a row: for every triple d,d+1,d+2 -> sum <= 2
-        for i in range(len(dates_list) - 2):
-            d = dates_list[i]
-            d1 = dates_list[i + 1]
-            d2 = dates_list[i + 2]
-            # If prev_len > 0 and i == 0, then we must account previous consecutive tail that may combine with d,d1,d2
-            # Use linearization: offset = prev_len but clamp to 2 because prev_len could be >2 which is already infeasible
-            offset = min(prev_len, 2) if i == 0 else 0
-            # model: work(d)+work(d1)+work(d2) + offset <= 2
-            model.Add(work_day[d] + work_day[d1] + work_day[d2] + offset <= 2)
-
-        # 2 days off after block end: handle previous block that ended just before horizon
-        if prev_len >= 1:
-            # if prev block length >=1 and ended right before start date,
-            # we must ensure the first (2 - (prev_len-?)) days are off depending on whether prev block ended >=2... simpler: if prev_len>=2 then first day must be off; if prev_len>=1 then enforce first two days off if block ended two days before? 
-            # Simpler robust rule: if prev_len >= 2 then the first day must be off; if prev_len >=3 then first two days must be off.
-            if prev_len >= 3:
-                for d in dates_list[:2]:
-                    model.Add(work_day[d] == 0)
-            elif prev_len == 2:
-                # require first day off
-                model.Add(work_day[dates_list[0]] == 0)
-            # if prev_len == 1, we don't force offs (block hasn't reached 2)
-        # Also enforce "if works today and NOT tomorrow -> day after tomorrow must be off"
-        for i in range(len(dates_list) - 2):
-            d = dates_list[i]
-            d1 = dates_list[i + 1]
-            d2 = dates_list[i + 2]
-            model.Add(work_day[d2] == 0).OnlyEnforceIf([work_day[d], work_day[d1].Not()])
-
-    # 10.8) (602056): max 3 shifts / week, only A or N
-    emp_602056 = '602056'
-    if emp_602056 in emp_ids:
-        for w in weeks:
-            s_list = shifts_by_week.get(w, [])
-            if s_list:
-                model.Add(sum(x[(s, emp_602056)] for s in s_list) <= 3)
-                for s in s_list:
-                    shift_name = shifts.loc[shifts['shift_id'] == s, 'shift_name'].iloc[0]
-                    if 'A' not in shift_name and 'N' not in shift_name:
-                        model.Add(x[(s, emp_602056)] == 0)
                         
     # Standardized constraints
     
@@ -1007,7 +910,7 @@ def auto_rooster(data, time_limit_s=60):
         sid = int(shift_row['shift_id'])
 
         req_quals = shift_row['qualification']
-        req_level = min(req_quals) if isinstance(req_quals, list) else int(req_quals)
+        req_level = max(req_quals) if isinstance(req_quals, list) else int(req_quals)
 
         for emp in emp_ids:
             emp_level = workers.loc[workers['medewerker_id'] == emp, 'deskundigheid'].iloc[0]
@@ -1026,26 +929,52 @@ def auto_rooster(data, time_limit_s=60):
                 model.AddMultiplicationEquality(p, [x[(sid, emp)], penalty_value])
 
                 deskundigheid_penalties.append(p)
-                
+    
+    #11) If qualification has two levels, prefer the first level when possible
+    preferred_qualification_bonus = []
+    for _, shift_row in shifts.iterrows():
+        sid = int(shift_row['shift_id'])
+
+        req_quals = shift_row['qualification']
+        if isinstance(req_quals, list) and len(req_quals) >= 2:
+            print(f'Applying preferred qualification bonus for shift {sid} with qualifications {req_quals} but preferring level {min(req_quals)}')
+            preferred_level = min(req_quals)
+
+            for emp in emp_ids:
+                emp_level = workers.loc[workers['medewerker_id'] == emp, 'deskundigheid'].iloc[0]
+
+                # Allowed assignments only (because emp_level ≤ req_level)
+                if min(emp_level) <= max(req_quals):
+                    # Create a bonus variable for this assignment
+                    b = model.NewBoolVar(f"preferredQualBonus_s{sid}_e{emp}")
+
+                    # Link bonus to assignment:
+                    model.Add(b <= x[sid, emp])
+                    model.Add(b <= int(emp_level == preferred_level))
+                    model.Add(b >= x[sid, emp] + int(emp_level == preferred_level) - 1)
+
+                    preferred_qualification_bonus.append(b)
+    
     # Combine all into one objective
     model.Minimize(
-        10 * sum(uncovered_terms) +                          # main uncovered penalty
+        100 * sum(uncovered_terms) +                     # main uncovered penalty
         0.005 * sum(under_coverage_terms) +             # soft penalty for under-coverage
-        0.001 * sum(under_coverage_weekend_terms) +   # soft penalty for under-coverage weekend pref
-        5 * sum(consec_weekend_penalties) +           # soft penalty for consecutive weekends
-        1 * sum(isolated_shift_penalties) +           # soft penalty for isolated shifts
+        0.001 * sum(under_coverage_weekend_terms) +     # soft penalty for under-coverage weekend pref
+        5 * sum(consec_weekend_penalties) +             # soft penalty for consecutive weekends
+        1 * sum(isolated_shift_penalties) +             # soft penalty for isolated shifts
         0.5 * sum(rest_after_night_penalties) +         # soft penalty for insufficient rest after night blocks
         0.1 * sum(unequal_shift_penalties) +            # soft penalty for uneven shift type distribution
-        0.1 * sum(week_balance_penalties.values()) +   # soft penalty for unequal distribution of shifts per week
-        1 * sum(overig_penalties) -              # soft penalty for 'overig' night shifts
+        0.1 * sum(week_balance_penalties.values()) +    # soft penalty for unequal distribution of shifts per week
+        1 * sum(overig_penalties) -                     # soft penalty for 'overig' night shifts
         0.1 * sum(preferred_shift_bonus) +              # small bonus for preferred shifts
-        0.1 * sum(deskundigheid_penalties)                 # soft penalty for higher than required deskundigheid
+        0.1 * sum(deskundigheid_penalties) -            # soft penalty for higher than required deskundigheid
+        0.01 * sum(preferred_qualification_bonus)        # small bonus for preferred qualification level
     )
 
     ### Solve ###
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit_s
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = 16
     try:
         status = solver.Solve(model)
     except Exception as e:
@@ -1118,6 +1047,7 @@ def auto_rooster(data, time_limit_s=60):
         print("Total 'overig' shift penalties:", sum(solver.Value(v) for v in overig_penalties))
         print("Total preferred shift bonuses:", sum(solver.Value(v) for v in preferred_shift_bonus))
         print("Total deskundigheid penalties:", sum(solver.Value(v) for v in deskundigheid_penalties))
+        print("Total preferred qualification bonuses:", sum(solver.Value(v) for v in preferred_qualification_bonus))
         
                 
         # ---- Debug print for weekly distribution ----
