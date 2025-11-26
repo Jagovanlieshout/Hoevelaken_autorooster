@@ -14,7 +14,7 @@ Om de tool te gebruiken, wordt Docker gebruikt om een consistente omgeving te ga
 1. Zorg ervoor dat Docker op uw systeem is geïnstalleerd. U kunt Docker downloaden en installeren vanaf de officiële website: https://www.docker.com/get-started
 2. Open Docker Desktop en open de ingebouwde terminal. De terminal is aan de rechteronderkant van het scherm te vinden.
 3. In de terminal moet je de volgende commands runnen:
-git clone https://github.com/Jagovanlieshout/Hoevelaken_autorooster.git
+git clone https://github.com/Jagovanlieshout/Gastenhuis_Autorooster.git
 cd Hoevelaken_autorooster
 docker build -t rooster_automaat .
 4. Klik in het menu aan de linkerkant op 'Images' hier zie je nu een image genaamd rooster_automaat staan, dit is wat we zojuist hebben opgezet.
