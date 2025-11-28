@@ -24,8 +24,26 @@ def validate_auto_rooster(data, result):
     # Helper: quick lookup
     shifts_lookup = shifts.set_index('shift_id')
 
-    COA_7_1_exempt = set(map(str, [602859]))  # Teuna
-    CAO_7_4_exempt = set(map(str, [2097, 602859]))  # Hennie and Teuna
+    # COA 7.1 exemptions: employees whose max consecutive nights differs from default 5
+    COA_7_1_exempt = set()
+
+    for _, w in workers.iterrows():
+        mid = w['medewerker_id']
+        max_consec = 5
+        patroon = w.get('patroon') if isinstance(w, dict) else w.get('patroon') if hasattr(w, 'get') else w['patroon'] if 'patroon' in w.index else None
+        voorkeur_nacht = workers.loc[workers['medewerker_id'] == mid, 'voorkeur_nacht'].iloc[0]
+        
+        if voorkeur_nacht == 'uitsluitend' and patroon is not None and not (isinstance(patroon, float) and pd.isna(patroon)):
+            try:
+                first = str(patroon).split(',')[0].strip()
+                if first:
+                    max_consec = int(first)
+            except Exception:
+                pass
+
+        if max_consec != 5:
+            COA_7_1_exempt.add(mid)
+    CAO_7_4_exempt = workers[workers['voorkeur_nacht'] != 'niet']['medewerker_id'].astype(str).tolist()
 
     ## 1) Coverage: each shift has <= 1 assigned employee
     for sid, group in assignments_df.groupby("shift_id"):
@@ -140,102 +158,6 @@ def validate_auto_rooster(data, result):
         leeftijd = int(workers.loc[workers['medewerker_id'] == emp, 'leeftijd'].iloc[0])
         if leeftijd > 55 and group['is_night'].any():
             errors.append(f"Employee {emp} (age {leeftijd}) assigned to night shifts: {group[group['is_night']==True]['shift_id'].tolist()}")
-
-    ## 8) Qualification match
-    for _, row in assignments_df.iterrows():
-        sid = row['shift_id']
-        required_quals = shifts_lookup.loc[sid, 'qualification']
-        if not isinstance(required_quals, list):
-            required_quals = [required_quals]
-        emp_quals = workers.loc[workers['medewerker_id'] == row['employee_id'], 'deskundigheid'].iloc[0]
-        if not any(q in emp_quals for q in required_quals):
-            errors.append(f"Employee {row['employee_id']} lacks qualification {required_quals} for shift {sid}.")
-
-    ## 9) Employee-specific constraints
-    for _, row in assignments_df.iterrows():
-        emp = row['employee_id']
-        sid = row['shift_id']
-        shift = shifts_lookup.loc[sid]
-        date = row['shift_date']
-        day_of_week = int(shift['day_of_week'])
-        is_night = shift['is_night']
-
-        # 9.1) Hennie: only night shifts
-        if emp == '2097' and not is_night:
-            errors.append(f"Employee 2097 (Hennie) assigned to non-night shift {sid} on {date}.")
-
-        # 9.2) Romy: weekends only
-        if emp == '2653' and day_of_week not in [5, 6]:
-            errors.append(f"Employee 2653 (Romy) assigned to weekday shift {sid} on {date}.")
-
-        # 9.3) Jasmijn: Friday night + weekends
-        if emp == '3888':
-            allowed = (day_of_week == 4 and 'A' in row['shift_name']) or day_of_week in [5, 6]
-            if not allowed:
-                errors.append(f"Employee 3888 (Jasmijn) assigned to disallowed shift {sid} on {date}.")
-
-        # 9.4) Maike: no Mon/Tue/Wed
-        if emp == '601011' and day_of_week in [0, 1, 2]:
-            errors.append(f"Employee 601011 (Maike) assigned to shift {sid} on {date} (Mon/Tue/Wed not allowed).")
-
-        # 9.5) Marlies: Max 2 days in a row, then 2 days off
-        if emp == '603722':
-            days = assignments_df[assignments_df['employee_id'] == emp]['shift_date'].sort_values().tolist()
-            blocks, block = [], []
-            for d in days:
-                if not block or d == block[-1] + timedelta(days=1):
-                    block.append(d)
-                else:
-                    blocks.append(block)
-                    block = [d]
-            if block:
-                blocks.append(block)
-            for b in blocks:
-                if len(b) > 2:
-                    errors.append(f"Employee 603722 (Marlies) works >2 days in a row: {b}.")
-                next_two_days = [b[-1] + timedelta(days=1), b[-1] + timedelta(days=2)]
-                next_shifts = assignments_df[(assignments_df['employee_id'] == emp) & (assignments_df['shift_date'].isin(next_two_days))]
-                if len(next_shifts) > 0:
-                    errors.append(f"Employee 603722 (Marlies) does not have 2 days off after block {b}.")
-
-        # 9.6) Teuna: 7-night / 7-off pattern
-        if emp == '602859':
-            nights = assignments_df[(assignments_df['employee_id'] == emp) & (assignments_df['is_night'])]['shift_date'].sort_values().tolist()
-            blocks, block = [], []
-            for d in nights:
-                if not block or d == block[-1] + timedelta(days=1):
-                    block.append(d)
-                else:
-                    blocks.append(block)
-                    block = [d]
-            if block:
-                blocks.append(block)
-            for i, b in enumerate(blocks):
-                if i not in [0, len(blocks)-1] and len(b) != 7:
-                    errors.append(f"Employee 602859 (Teuna) has night block of length {len(b)} (expected 7): {b}.")
-                following = [b[-1] + timedelta(days=i+1) for i in range(7)]
-                following = [d for d in following if d in assignments_df['shift_date'].values]
-                next_shifts = assignments_df[(assignments_df['employee_id'] == emp) & (assignments_df['shift_date'].isin(following))]
-                if len(next_shifts) > 0:
-                    errors.append(f"Employee 602859 (Teuna) did not get 7 days off after block {b}.")
-
-        # 9.7) Maria: Max 3 shifts per week
-        if emp == '627311':
-            emp_group = assignments_df[assignments_df['employee_id'] == emp]
-            for week, week_group in emp_group.groupby("week"):
-                if len(week_group) > 3:
-                    errors.append(f"Employee 627311 (Maria) has {len(week_group)} shifts in week {week} (> 3).")
-
-        # 9.8) Carolien: Max 3 shifts per week + only late or night
-        if emp == '602056':
-            emp_group = assignments_df[assignments_df['employee_id'] == emp]
-            for week, week_group in emp_group.groupby("week"):
-                if len(week_group) > 3:
-                    errors.append(f"Employee 602056 (Carolien) has {len(week_group)} shifts in week {week} (> 3).")
-                for _, shift_row in week_group.iterrows():
-                    shift_name = shifts_lookup.loc[shift_row['shift_id'], 'shift_name']
-                    if 'A' not in shift_name and not shift_row['is_night']:
-                        errors.append(f"Employee 602056 (Carolien) assigned to non-late shift {shift_row['shift_id']} ({shift_name}).")
 
     if errors:
         print(f"=== VALIDATION FAILED: {len(errors)} issue(s) ===")

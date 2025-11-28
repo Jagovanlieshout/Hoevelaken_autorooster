@@ -223,7 +223,28 @@ def auto_rooster(data, time_limit_s=60):
 
     # 7.1) Max consecutive nights (consider prev_assignments)
     for emp in emp_ids:
-        max_consec = 7 if emp in {'602859-1'} else 5  # your CAO exemption set uses strings in your code earlier
+        #max_consec = 7 if emp in {'602859-1'} else 5  # your CAO exemption set uses strings in your code earlier
+        #If emp has non-empty patroon column and has value 'uitsluitend' for voorkeur_nacht, set max_consec to first value of patroon
+        patroon = workers.loc[workers['medewerker_id'] == emp, 'patroon'].iloc[0]
+        voorkeur_nacht = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
+        # default value
+        max_consec = 5
+        try:
+            # only attempt parsing when preference is 'uitsluitend' and patroon is not missing
+            if voorkeur_nacht == 'uitsluitend' and patroon is not None and not (isinstance(patroon, float) and pd.isna(patroon)):
+                # handle string patterns like "7,7"
+                if isinstance(patroon, str):
+                    patroon_values = [int(x) for x in patroon.split(',') if x.strip() != '']
+                # handle list/tuple patterns
+                elif isinstance(patroon, (list, tuple)):
+                    patroon_values = [int(x) for x in patroon if not (isinstance(x, float) and pd.isna(x))]
+                else:
+                    patroon_values = []
+                if patroon_values:
+                    max_consec = patroon_values[0]
+                    print(f"Employee {emp} has voorkeur_nacht 'uitsluitend' with patroon {patroon_values}, setting max_consec to {max_consec}.")
+        except Exception:
+            pass
         # previous night dates as date objects
         prev_night_dates = get_last_consecutive_block_dates(prev_assignments, emp, is_night=True)
         # current nights dates (unique sorted)
@@ -366,7 +387,7 @@ def auto_rooster(data, time_limit_s=60):
     for emp in emp_ids:
         #pref_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dagdelen'].iloc[0]
         day_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_dag'].iloc[0]
-        if day_emp == 'Niet':
+        if day_emp == 'niet':
             for shift in shifts['shift_id']:
                 shift_type_map_value = shift_type_map.get(shift, 'Other')
                 if shift_type_map_value in {'D', 'A'}:
@@ -378,7 +399,7 @@ def auto_rooster(data, time_limit_s=60):
                     model.Add(x[(shift, emp)] == 0)
         
         evening_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_avond'].iloc[0]
-        if evening_emp == 'Niet':
+        if evening_emp == 'niet':
             for shift in shifts['shift_id']:
                 shift_type_map_value = shift_type_map.get(shift, 'Other')
                 if shift_type_map_value in {'A'}:
@@ -391,7 +412,7 @@ def auto_rooster(data, time_limit_s=60):
                     model.Add(x[(shift, emp)] == 0)
         
         night_emp = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
-        if night_emp == 'Niet':
+        if night_emp == 'niet':
             for s in night_shifts:
                 model.Add(x[(s, emp)] == 0)
         elif night_emp == 'uitsluitend':
@@ -416,9 +437,7 @@ def auto_rooster(data, time_limit_s=60):
         on_days = patroon[0]
         off_days = patroon[1]
         pattern_length = on_days + off_days
-        
-        print(f'Applying {on_days}-on/{on_days}-off for a {pattern_length} day pattern for employee {emp}')
-            
+                    
         # forbid non-night shifts if applicable
         if night_emp == 'uitsluitend':
             night = True
@@ -938,7 +957,6 @@ def auto_rooster(data, time_limit_s=60):
                 
                 # Only employees that satisfy the qualification requirements
                 if emp_level in req_quals:
-                    print(f'Checking preferred qualification bonus for shift {sid}, emp {emp}, emp_level {emp_level}, req_quals {req_quals}')
                     
                     # Create bonus var
                     b = model.NewBoolVar(f"preferredQualBonus_s{sid}_e{emp}")
@@ -946,9 +964,7 @@ def auto_rooster(data, time_limit_s=60):
                     # If emp has preferred qualification → bonus follows assignment
                     if emp_level == preferred_level:
                         model.Add(b == x[sid, emp])
-                        print(f'Preferred qualification bonus applied for shift {sid} and qualification {emp_level} and required {req_quals}')
                     else:
-                        print(f'No preferred qualification bonus for shift {sid} and qualification {emp_level} and required {req_quals}')
                         model.Add(b == 0)
 
 
