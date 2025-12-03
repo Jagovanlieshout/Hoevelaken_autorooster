@@ -11,9 +11,10 @@ def validate_auto_rooster(data, result):
     
     errors = []
 
-    shifts = data['shifts']
-    workers = data['workers']
-    onb = data['onb']
+    shifts = data['shifts'].copy()
+    workers = data['workers'].copy()
+    onb = data['onb'].copy()
+    emp_ids = data['emp_ids']
 
     assignments_df = result['assignments_df']
         
@@ -27,22 +28,17 @@ def validate_auto_rooster(data, result):
     # COA 7.1 exemptions: employees whose max consecutive nights differs from default 5
     COA_7_1_exempt = set()
 
-    for _, w in workers.iterrows():
-        mid = w['medewerker_id']
+    for emp in emp_ids:
         max_consec = 5
-        patroon = w.get('patroon') if isinstance(w, dict) else w.get('patroon') if hasattr(w, 'get') else w['patroon'] if 'patroon' in w.index else None
-        voorkeur_nacht = workers.loc[workers['medewerker_id'] == mid, 'voorkeur_nacht'].iloc[0]
+        patroon = workers.loc[workers['medewerker_id'] == emp, 'patroon'].iloc[0]
+        voorkeur_nacht = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
+        print(f"Employee {emp} has voorkeur_nacht: {voorkeur_nacht}, patroon: {patroon}")
         
-        if voorkeur_nacht == 'uitsluitend' and patroon is not None and not (isinstance(patroon, float) and pd.isna(patroon)):
-            try:
-                first = str(patroon).split(',')[0].strip()
-                if first:
-                    max_consec = int(first)
-            except Exception:
-                pass
-
-        if max_consec != 5:
-            COA_7_1_exempt.add(mid)
+        if voorkeur_nacht == 'uitsluitend' and patroon != []:
+            max_consec = patroon[0]
+            print(f"Employee {emp} has voorkeur_nacht 'uitsluitend' with patroon {patroon}, setting max_consec to {max_consec}.")
+            COA_7_1_exempt.add(emp)
+            
     CAO_7_4_exempt = workers[workers['voorkeur_nacht'] != 'niet']['medewerker_id'].astype(str).tolist()
 
     ## 1) Coverage: each shift has <= 1 assigned employee
@@ -158,7 +154,13 @@ def validate_auto_rooster(data, result):
         leeftijd = int(workers.loc[workers['medewerker_id'] == emp, 'leeftijd'].iloc[0])
         if leeftijd > 55 and group['is_night'].any():
             errors.append(f"Employee {emp} (age {leeftijd}) assigned to night shifts: {group[group['is_night']==True]['shift_id'].tolist()}")
-
+    
+    # If voorkeur_nacht is 'niet', no night shifts
+    for emp, group in assignments_df.groupby("employee_id"):
+        voorkeur_nacht = workers.loc[workers['medewerker_id'] == emp, 'voorkeur_nacht'].iloc[0]
+        if voorkeur_nacht == 'niet' and group['is_night'].any():
+            errors.append(f"Employee {emp} has 'niet' voorkeur_nacht but assigned to night shifts: {group[group['is_night']==True]['shift_id'].tolist()}")
+    
     if errors:
         print(f"=== VALIDATION FAILED: {len(errors)} issue(s) ===")
         for e in errors:
